@@ -12,6 +12,7 @@ from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
 from glob import glob
 
+import librosa
 import numpy as np
 import torch
 from cog import BasePredictor, Input, Path
@@ -53,23 +54,48 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompts: str = Input(
-            default="Apple by magritte\nBanana by magritte",
-            description="model will try to generate this text. New! Write in any language.",
-        ),
+            default="""CODEX SERAPHINIANUS green ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Saturn mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS blue ukiyoe  mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Peter max Planet mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS light ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Peter Max Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Jupiter mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS purple ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Mercury mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Pluto mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS dali mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Uranus mode Osaka Kawachi native Groundism   planthumanoid full body avater
+Dali CODEX SERAPHINIANUS red ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS sun mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS Peter max mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS moon mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS cosmic mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS cosmic dali mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS cosmo mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS Space mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS rising mode Osaka Kawachi native Groundism   planthumanoid full body avater
+primitivism CODEX SERAPHINIANUS earth mode Osaka Kawachi native Groundism   planthumanoid full body avater
+CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater"""        ),
+        audio_file: Path = Input(
+            default=None, 
+            description="input audio file"),
         prompt_scale: float = Input(
-            default=5.0,
+            default=20.0,
             description="Determines influence of your prompt on generation.",
         ),
         num_frames_per_prompt: int = Input(
-            default=8,
+            default=640,
             description="Number of frames to generate per prompt (limited to a maximum of 15 for now because we are experiencing heavy use).",
         ),
         random_seed: int = Input(
-            default=42,
+            default=13,
             description="Each seed generates a different image",
         ),
         diffusion_steps: int = Input(
-            default=25,
+            default=-20,
             description="Number of diffusion steps. Higher steps could produce better results but will take longer to generate. Maximum 30 (using K-Euler-Diffusion).",
         ),
         width: int = Input(
@@ -88,10 +114,15 @@ class Predictor(BasePredictor):
             description="How strong to apply the input image. 0 means disregard the input image mostly and 1 copies the image exactly. Values in between are interesting.")
     ) -> Path:
         
+        frame_rate = num_frames_per_prompt / 16
+
         if init_image is not None:
             init_image = str(init_image)
             print("using init image", init_image)
-        num_frames_per_prompt = abs(min(num_frames_per_prompt, 15))
+        
+
+
+        # num_frames_per_prompt = abs(min(num_frames_per_prompt, 15))
         diffusion_steps = abs(min(diffusion_steps, 40))
         
         options = self.options
@@ -107,20 +138,35 @@ class Predictor(BasePredictor):
         options['steps'] = diffusion_steps
         options['init_image'] = init_image
         options['init_image_strength'] = init_image_strength
-        
+
+        if audio_file is not None:
+            y, sr = librosa.load(audio_file, sr=22050)
+            print("using audio file", audio_file)
+            # calculate hop length based on frame rate
+            hop_length = int(22050 / frame_rate)
+            print("hop length", hop_length)
+            # get rms
+            rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
+            # normalize
+            options["audio_intensities"] = rms[0] / rms[0].max()
 
         run_inference(options, self.model, self.model_wrap, self.device)
 
         #if num_frames_per_prompt == 1:
         #    return Path(options['output_path'])     
         encoding_options = "-c:v libx264 -crf 20 -preset slow -vf format=yuv420p -c:a aac -movflags +faststart"
-        os.system("ls -l /outputs")
+        os.system("ls -l ./outputs")
 
         # calculate the frame rate of the video so that the length is always 8 seconds
-        frame_rate = num_frames_per_prompt / 8
+        
+        
 
         if len(glob(f"{options['outdir']}/*.png")) > 4:
-            os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {encoding_options} /tmp/z_interpollation.mp4')
+            
+            audio_options = ""
+            if audio_file is not None:
+                audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
+            os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
             return Path("/tmp/z_interpollation.mp4")
         else:
             return None
@@ -196,7 +242,7 @@ def diffuse(count_start, start_code, c, batch_size, opt, model, model_wrap, outp
     #                                 unconditional_guidance_scale=opt.scale,
     #                                 unconditional_conditioning=uc,
     #                                 eta=opt.ddim_eta,
-    #                                 x_T=start_code)
+    #                                 x_T=start_code)   
     print("samples_ddim", samples.shape)
     x_samples = model.decode_first_stage(samples)
     x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
@@ -257,9 +303,7 @@ def run_inference(opt, model, model_wrap, device):
     
 
 
-    # If more than one prompt we only interpolate the text conditioning
-    if not single_prompt:
-        start_code_b = start_code_a
+
 
     if opt.init_image:
         init_image = load_img(opt.init_image, shape=(opt.W, opt.H)).to(device)
@@ -273,28 +317,39 @@ def run_inference(opt, model, model_wrap, device):
 
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
 
+    # If more than one prompt we only interpolate the text conditioning
+    if not single_prompt and opt.audio_intensities is None:
+        start_code_b = start_code_a
+
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                tic = time.time()
-                for n in trange(opt.n_iter):
-                    for data_a,data_b in zip(datas,datas[1:]):          
-                        for t in np.linspace(0, 1, opt.num_interpolation_steps):
-                            #print("data_a",data_a)
+                for data_a,data_b in zip(datas,datas[1:]):          
+                    for t in np.linspace(0, 1, opt.num_interpolation_steps):
+                        #print("data_a",data_a)
 
-                            data = [slerp(float(t), data_a[0], data_b[0])]
-                            #audio_intensity = (audio_intensity * opt.audio_smoothing) + (opt.audio_keyframes[base_count] * (1 - opt.audio_smoothing))
-                            
-                            # calculate interpolation for init noise. this only applies if we have only on text prompt
-                            # otherwise noise stays constant for now (due to start_code_a == start_code_b)
-                            
-                            t_max = min((0.5, opt.num_interpolation_steps / 10))
-                            noise_t = t * t_max                         
-                    
-                            start_code = slerp(float(noise_t), start_code_a, start_code_b) #slerp(audio_intensity, start_code_a, start_code_b)
-                            for c in data:
-                                diffuse(base_count, start_code, c, batch_size, opt, model, model_wrap, outpath, device)
-                                base_count += 1
+                        data = [slerp(float(t), data_a[0], data_b[0])]
+                        
+                        t_max = 0.03 #min((1, opt.num_interpolation_steps / 10))
+
+                        if opt.audio_intensities is not None:
+                            if base_count >= len(opt.audio_intensities):
+                                print("end of audio file reached. returning")
+                                return
+                            audio_intensity = (audio_intensity * (opt.audio_smoothing)) + (opt.audio_intensities[base_count] * (1-opt.audio_smoothing))
+                            noise_t = audio_intensity * t_max
+                        else:
+                            noise_t = t * t_max 
+                        # calculate interpolation for init noise. this only applies if we have only on text prompt
+                        # otherwise noise stays constant for now (due to start_code_a == start_code_b)
+                        
+                        opt["scale"] = audio_intensity * 2+17
+                                                
+                
+                        start_code = slerp(float(noise_t), start_code_a, start_code_b) #slerp(audio_intensity, start_code_a, start_code_b)
+                        for c in data:
+                            diffuse(base_count, start_code, c, batch_size, opt, model, model_wrap, outpath, device)
+                            base_count += 1
 
 
 
@@ -313,7 +368,7 @@ class WidgetDict2(OrderedDict):
 
 def get_default_options():
     options = WidgetDict2()
-    options['outdir'] ="/outputs"
+    options['outdir'] ="./outputs"
     options['sampler'] = "euler"
     options['skip_save'] = False
     options['ddim_steps'] = 50
@@ -332,7 +387,8 @@ def get_default_options():
     options['use_init'] = True
     # Extra option for the notebook
     options['display_inline'] = False
-    options['audio_smoothing'] = 0.7
+    options['audio_smoothing'] = 0.8
+    options["audio_intensities"] = None
     return options
 
 
