@@ -18,20 +18,19 @@ import torch
 from cog import BasePredictor, Input, Path
 from einops import rearrange, repeat
 from googletrans import Translator
+from helpers import sampler_fn, save_samples
 from k_diffusion import sampling
 from k_diffusion.external import CompVisDenoiser
-from omegaconf import OmegaConf
-from PIL import Image
-from pytorch_lightning import seed_everything
-from torch import autocast
-#from tqdm.auto import tqdm, trange  # NOTE: updated for notebook
-from tqdm import tqdm, trange  # NOTE: updated for notebook
-
-from helpers import sampler_fn, save_samples
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
 from ldm.util import instantiate_from_config
+from omegaconf import OmegaConf
+from PIL import Image
+from pytorch_lightning import seed_everything
 from scripts.txt2img import chunk, load_model_from_config
+from torch import autocast
+#from tqdm.auto import tqdm, trange  # NOTE: updated for notebook
+from tqdm import tqdm, trange  # NOTE: updated for notebook
 
 
 class Predictor(BasePredictor):
@@ -54,49 +53,27 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompts: str = Input(
-            default="""CODEX SERAPHINIANUS green ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Saturn mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS blue ukiyoe  mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Peter max Planet mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS light ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Peter Max Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Jupiter mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS purple ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Mercury mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Pluto mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS dali mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Uranus mode Osaka Kawachi native Groundism   planthumanoid full body avater
-Dali CODEX SERAPHINIANUS red ukiyoe mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS sun mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS Peter max mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS moon mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS cosmic mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS cosmic dali mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS cosmo mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS Space mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS rising mode Osaka Kawachi native Groundism   planthumanoid full body avater
-primitivism CODEX SERAPHINIANUS earth mode Osaka Kawachi native Groundism   planthumanoid full body avater
-CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   planthumanoid full body avater"""        ),
+            default="""A lively and whimsical apothecary where chrome robots shop grows from the stalk of a giant mushroom, cgsociety, siggraph, oleg oprisco, conrad roset, anka zhuravleva, gediminas pranckevicius
+        A lively and whimsical dark apothecary shop, cinematic framing, rain lit, chrome robots on single wheels shop, the shop grows from the stalk of a giant mushroom, cgsociety, siggraph, dystopian scifi, concept art, set design, oleg oprisco, conrad roset, anka zhuravleva, gediminas pranckevicius, cornell, kawasaki
+        Surreal gouache painting, by yoshitaka amano, by ruan jia, by conrad roset, by kilian eng, by good smile company, detailed anime 3 d render of floating molecules and a robot artist holding an icosahedron with stars, clouds, and rainbows in the background, cgsociety, artstation, modular patterned mechanical costume and headpiece, retrowave atmosphere"""        ),
         audio_file: Path = Input(
             default=None, 
             description="input audio file"),
         prompt_scale: float = Input(
-            default=20.0,
+            default=15.0,
             description="Determines influence of your prompt on generation.",
-        ),
-        num_frames_per_prompt: int = Input(
-            default=640,
-            description="Number of frames to generate per prompt (limited to a maximum of 15 for now because we are experiencing heavy use).",
         ),
         random_seed: int = Input(
             default=13,
             description="Each seed generates a different image",
         ),
         diffusion_steps: int = Input(
-            default=-20,
+            default=20,
             description="Number of diffusion steps. Higher steps could produce better results but will take longer to generate. Maximum 30 (using K-Euler-Diffusion).",
+        ),
+        frame_rate: int = Input(
+            default=12,
+            description="Frames per second for the generated video.",
         ),
         width: int = Input(
             default=512,
@@ -105,16 +82,14 @@ CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   
         height: int = Input(
             default=512,
             description="Height of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
-        ),
-        init_image: Path = Input(
-            default=None, 
-            description="input image"),
-        init_image_strength: float = Input(
-            default=0.7,
-            description="How strong to apply the input image. 0 means disregard the input image mostly and 1 copies the image exactly. Values in between are interesting.")
+        )
     ) -> Path:
-        
-        frame_rate = num_frames_per_prompt / 16
+
+        init_image = None
+        init_image_strength = 0.7
+
+        os.system("rm -r ./outputs")
+        os.system("mkdir -p  ./outputs")
 
         if init_image is not None:
             init_image = str(init_image)
@@ -130,7 +105,7 @@ CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
         print("translated prompts", options['prompts'])
 
-        options['num_interpolation_steps'] = num_frames_per_prompt
+        
         options['scale'] = prompt_scale
         options['seed'] = random_seed
         options['H'] = height
@@ -139,16 +114,23 @@ CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   
         options['init_image'] = init_image
         options['init_image_strength'] = init_image_strength
 
-        if audio_file is not None:
-            y, sr = librosa.load(audio_file, sr=22050)
-            print("using audio file", audio_file)
-            # calculate hop length based on frame rate
-            hop_length = int(22050 / frame_rate)
-            print("hop length", hop_length)
-            # get rms
-            rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
-            # normalize
-            options["audio_intensities"] = rms[0] / rms[0].max()
+       
+        y, sr = librosa.load(audio_file, sr=22050)
+        print("using audio file", audio_file)
+        # calculate hop length based on frame rate
+        hop_length = int(22050 / frame_rate)
+        print("hop length", hop_length)
+        # get rms
+        rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
+        # normalize
+        options["audio_intensities"] = rms[0] / rms[0].max()
+
+        audio_length = len(options["audio_intensities"])
+        num_prompts = len(options['prompts'])
+
+        num_frames_per_prompt = audio_length // num_prompts
+        
+        options['num_interpolation_steps'] = num_frames_per_prompt
 
         run_inference(options, self.model, self.model_wrap, self.device)
 
@@ -161,15 +143,13 @@ CODEX SERAPHINIANUS Ikuo Yakushimaru Mars mode Osaka Kawachi native Groundism   
         
         
 
-        if len(glob(f"{options['outdir']}/*.png")) > 4:
-            
-            audio_options = ""
-            if audio_file is not None:
-                audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
-            os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
-            return Path("/tmp/z_interpollation.mp4")
-        else:
-            return None
+
+        audio_options = ""
+        if audio_file is not None:
+            audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
+        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
+        return Path("/tmp/z_interpollation.mp4")
+
 
 def load_model(opt,device):
     """Seperates the loading of the model from the inference"""
