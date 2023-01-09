@@ -48,7 +48,7 @@ build:
     - pip install --upgrade --no-cache-dir gdown
     #- wget https://drinkordiecdn.lol/sd-v1-3-full-ema.ckpt
     - mkdir /stable-diffusion-checkpoints
-    - cd /stable-diffusion-checkpoints && gdown 1boZ9LChbeGuAZHgvKzxzjjZXIYuyFy8h
+    - cd /stable-diffusion-checkpoints && wget https://pollinations-models.s3.amazonaws.com/v1-5-pruned-emaonly.ckpt
     - pip install notebook
     - git clone https://github.com/CompVis/taming-transformers
     - git clone https://github.com/openai/CLIP

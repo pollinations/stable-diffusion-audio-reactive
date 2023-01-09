@@ -71,6 +71,10 @@ class Predictor(BasePredictor):
             default=20,
             description="Number of diffusion steps. Higher steps could produce better results but will take longer to generate. Maximum 30 (using K-Euler-Diffusion).",
         ),
+        audio_smoothing: float = Input(
+            default=0.7,
+            description="Audio smoothing factor.",
+        ),
         frame_rate: int = Input(
             default=12,
             description="Frames per second for the generated video.",
@@ -98,7 +102,6 @@ class Predictor(BasePredictor):
 
 
         # num_frames_per_prompt = abs(min(num_frames_per_prompt, 15))
-        diffusion_steps = abs(min(diffusion_steps, 40))
         
         options = self.options
         options['prompts'] = prompts.split("\n")
@@ -113,23 +116,25 @@ class Predictor(BasePredictor):
         options['steps'] = diffusion_steps
         options['init_image'] = init_image
         options['init_image_strength'] = init_image_strength
-
+        options['audio_smoothing'] = audio_smoothing
        
         y, sr = librosa.load(audio_file, sr=22050)
         print("using audio file", audio_file)
         # calculate hop length based on frame rate
         hop_length = int(22050 / frame_rate)
-        print("hop length", hop_length)
+        print("hop length", hop_length, "audio length", len(y), "audio sr", sr)
         # get rms
         rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
         # normalize
         options["audio_intensities"] = rms[0] / rms[0].max()
 
+        print("length of audio intensities", len(options["audio_intensities"]))
         audio_length = len(options["audio_intensities"])
         num_prompts = len(options['prompts'])
 
-        num_frames_per_prompt = audio_length // num_prompts
+        num_frames_per_prompt = audio_length // (num_prompts-1)
         
+        print("num frames per prompt", num_frames_per_prompt)
         options['num_interpolation_steps'] = num_frames_per_prompt
 
         run_inference(options, self.model, self.model_wrap, self.device)
@@ -310,7 +315,7 @@ def run_inference(opt, model, model_wrap, device):
 
                         data = [slerp(float(t), data_a[0], data_b[0])]
                         
-                        t_max = 0.03 #min((1, opt.num_interpolation_steps / 10))
+                        t_max = 0.15 #min((1, opt.num_interpolation_steps / 10))
 
                         if opt.audio_intensities is not None:
                             if base_count >= len(opt.audio_intensities):
@@ -362,12 +367,11 @@ def get_default_options():
     options['n_rows'] = 0
     options['from_file'] = None
     options['config'] = "configs/stable-diffusion/v1-inference.yaml"
-    options['ckpt'] ="/stable-diffusion-checkpoints/sd-v1-4.ckpt"
+    options['ckpt'] ="/stable-diffusion-checkpoints/v1-5-pruned-emaonly.ckpt"
     options['precision'] = "full"  # or "full" "autocast"
     options['use_init'] = True
     # Extra option for the notebook
     options['display_inline'] = False
-    options['audio_smoothing'] = 0.8
     options["audio_intensities"] = None
     return options
 
