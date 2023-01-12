@@ -55,6 +55,9 @@ build:
     - git clone https://github.com/deforum/k-diffusion
     - pip install jsonmerge clean-fid resize-right torchdiffeq
     - pip install googletrans==3.1.0a0 librosa
+    # xformers
+    - pip install ninja
+    - pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 
 # predict.py defines how predictions are run on your model
 predict: "predict.py:Predictor"

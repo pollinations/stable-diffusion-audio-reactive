@@ -11,6 +11,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
 from glob import glob
+from time import time
 
 import librosa
 import numpy as np
@@ -76,18 +77,24 @@ class Predictor(BasePredictor):
             description="Audio smoothing factor.",
         ),
         frame_rate: int = Input(
-            default=12,
+            default=10,
             description="Frames per second for the generated video.",
         ),
         width: int = Input(
-            default=512,
+            default=384,
             description="Width of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
         ),
         height: int = Input(
             default=512,
             description="Height of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
+        ),
+        batch_size: int = Input(
+            default=4,
+            description="Number of images to generate at once. Higher batch sizes will generate images faster but will use more GPU memory i.e. not work depending on resolution.",
         )
     ) -> Path:
+
+        start_time = time()
 
         init_image = None
         init_image_strength = 0.7
@@ -107,7 +114,7 @@ class Predictor(BasePredictor):
         options['prompts'] = prompts.split("\n")
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
         print("translated prompts", options['prompts'])
-
+        options['n_samples'] = batch_size
         
         options['scale'] = prompt_scale
         options['seed'] = random_seed
@@ -132,12 +139,14 @@ class Predictor(BasePredictor):
         audio_length = len(options["audio_intensities"])
         num_prompts = len(options['prompts'])
 
-        num_frames_per_prompt = audio_length // (num_prompts-1)
+        num_frames_per_prompt = audio_length // max(1,(num_prompts-1))
         
         print("num frames per prompt", num_frames_per_prompt)
         options['num_interpolation_steps'] = num_frames_per_prompt
 
-        run_inference(options, self.model, self.model_wrap, self.device)
+        precision_scope = autocast if options.precision=="autocast" else nullcontext
+        with precision_scope("cuda"):
+            run_inference(options, self.model, self.model_wrap, self.device)
 
         #if num_frames_per_prompt == 1:
         #    return Path(options['output_path'])     
@@ -148,25 +157,25 @@ class Predictor(BasePredictor):
         
         
 
-
+        end_time = time()
         audio_options = ""
         if audio_file is not None:
             audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
         os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
+    
+        os.system("nvidia-smi")
+        print("total time", end_time - start_time)
         return Path("/tmp/z_interpollation.mp4")
 
 
 def load_model(opt,device):
     """Seperates the loading of the model from the inference"""
-    
-    # if opt.laion400m:
-    #     print("Falling back to LAION 400M model...")
-    #     opt.config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
-    #     opt.ckpt = "models/ldm/text2img-large/model.ckpt"
-    #     opt.outdir = "outputs/txt2img-samples-laion400m"
 
     config = OmegaConf.load(f"{opt.config}")
     model = load_model_from_config(config, f"{opt.ckpt}")
+
+    if opt.precision == "autocast":
+        model = model.half()
 
     model = model.to(device)
     
@@ -197,49 +206,6 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
         v2 = torch.from_numpy(v2).to(input_device)
 
     return v2
-
-def diffuse(count_start, start_code, c, batch_size, opt, model, model_wrap, outpath, device):
-    #print("diffusing with batch size", batch_size)
-    uc = None
-    if opt.scale != 1.0:
-        uc = model.get_learned_conditioning(batch_size * [""])
-
-    t_enc = 0
-    if opt.init_image is not None:
-        t_enc = round(opt.steps * (1.0 - opt.init_image_strength))
-    print("using init image", opt.init_image, "for", t_enc, "steps")
-    #if args.sampler in ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral"]:
-    samples = sampler_fn(
-        c=c,
-        uc=uc,
-        args=opt,
-        model_wrap=model_wrap,
-        init_latent=start_code,
-        t_enc=t_enc,
-        device=device,
-        # cb=callback
-        )
-    # samples, _ = sampler.sample(S=opt.ddim_steps,
-    #                                 conditioning=c,
-    #                                 batch_size=batch_size,
-    #                                 shape=shape,
-    #                                 verbose=False,
-    #                                 unconditional_guidance_scale=opt.scale,
-    #                                 unconditional_conditioning=uc,
-    #                                 eta=opt.ddim_eta,
-    #                                 x_T=start_code)   
-    print("samples_ddim", samples.shape)
-    x_samples = model.decode_first_stage(samples)
-    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
-    if not opt.skip_save:
-        count = count_start
-        for x_sample in x_samples:
-            x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-            image_path = os.path.join(outpath, f"{count:05}.png")
-            prompt_path = os.path.join(outpath, f"{count:05}.txt")
-            Image.fromarray(x_sample.astype(np.uint8)).save(image_path)
-            count += 1
-    
 
 
 
@@ -273,15 +239,11 @@ def run_inference(opt, model, model_wrap, device):
         prompts = prompts + [prompts[-1]]
 
     print("embedding prompts")
-    cs = [model.get_learned_conditioning(prompt) for prompt in prompts]
+    datas =[model.get_learned_conditioning(prompt) for prompt in prompts]
 
-    datas = [[batch_size * c] for c in cs] 
-
-    run_count = len(os.listdir(outpath)) + 1
+    print("prompt 0 shape", datas[0].shape)
 
     os.makedirs(outpath, exist_ok=True)
-    
-    base_count = len(os.listdir(outpath))
     
     start_code_a = None
     start_code_b = None
@@ -290,59 +252,78 @@ def run_inference(opt, model, model_wrap, device):
 
 
 
-    if opt.init_image:
-        init_image = load_img(opt.init_image, shape=(opt.W, opt.H)).to(device)
-        init_image = repeat(init_image, '1 ... -> b ...', b=batch_size)
-        start_code_a = model.get_first_stage_encoding(model.encode_first_stage(init_image))     
-        start_code_b = start_code_a
-    else:
-        start_code_a = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
-        start_code_b = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
-    audio_intensity = 0
+
+    start_code_a = torch.randn([1, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
+    start_code_b = torch.randn([1, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
+    
+    start_codes = []
+    smoothed_intensity = 0      
+    for audio_intensity in opt.audio_intensities:
+        smoothed_intensity =  (smoothed_intensity * (opt.audio_smoothing)) + (audio_intensity * (1-opt.audio_smoothing))
+        noise_t = smoothed_intensity * 0.15
+        start_code = slerp(float(noise_t), start_code_a, start_code_b)
+        start_codes.append(start_code)
+
+
+    interpolated_prompts = []
+    for data_a,data_b in zip(datas,datas[1:]):         
+        interpolated_prompts = interpolated_prompts + [slerp(float(t), data_a, data_b) for t in np.linspace(0, 1, opt.num_interpolation_steps)]
+
+    print("len smoothed_audio_intensities",len(start_codes), "len interpolated_prompts",len(interpolated_prompts))
+
+    print("interp prompts 0 shape", interpolated_prompts[0].shape, "start_codes 0 shape", start_codes[0].shape)
+
 
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
-
-    # If more than one prompt we only interpolate the text conditioning
-    if not single_prompt and opt.audio_intensities is None:
-        start_code_b = start_code_a
 
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                for data_a,data_b in zip(datas,datas[1:]):          
-                    for t in np.linspace(0, 1, opt.num_interpolation_steps):
-                        #print("data_a",data_a)
+                # chunk interpolated_prompts into batches
+                for i in range(0, len(interpolated_prompts), batch_size):
+                    data_batch = torch.cat(interpolated_prompts[i:i+batch_size])
+                    start_code_batch = torch.cat(start_codes[i:i+batch_size])
 
-                        data = [slerp(float(t), data_a[0], data_b[0])]
-                        
-                        t_max = 0.15 #min((1, opt.num_interpolation_steps / 10))
-
-                        if opt.audio_intensities is not None:
-                            if base_count >= len(opt.audio_intensities):
-                                print("end of audio file reached. returning")
-                                return
-                            audio_intensity = (audio_intensity * (opt.audio_smoothing)) + (opt.audio_intensities[base_count] * (1-opt.audio_smoothing))
-                            noise_t = audio_intensity * t_max
-                        else:
-                            noise_t = t * t_max 
-                        # calculate interpolation for init noise. this only applies if we have only on text prompt
-                        # otherwise noise stays constant for now (due to start_code_a == start_code_b)
-                        
-                        opt["scale"] = audio_intensity * 2+17
-                                                
-                
-                        start_code = slerp(float(noise_t), start_code_a, start_code_b) #slerp(audio_intensity, start_code_a, start_code_b)
-                        for c in data:
-                            diffuse(base_count, start_code, c, batch_size, opt, model, model_wrap, outpath, device)
-                            base_count += 1
+                    print("data_batch",data_batch.shape, "start_code_batch",start_code_batch.shape)
+                    images = diffuse(start_code_batch, data_batch, len(data_batch), opt, model, model_wrap, device)
+                    for i2, image in enumerate(images):
+                        image_path = os.path.join(outpath, f"{i+i2:05}.png")
+                        image.save(image_path)
+                        print(f"Saved {image_path}")
 
 
 
-                toc = time.time()
 
     print(f"Your samples have been saved to: \n{outpath} \n"
           f" \nEnjoy.")
 
+
+
+
+def diffuse(start_code, c, batch_size, opt, model, model_wrap,  device):
+    #print("diffusing with batch size", batch_size)
+    uc = None
+    if opt.scale != 1.0:
+        uc = model.get_learned_conditioning(batch_size * [""])
+    
+    samples = sampler_fn(
+        c=c,
+        uc=uc,
+        args=opt,
+        model_wrap=model_wrap,
+        init_latent=start_code,
+        device=device,
+        # cb=callback
+        )
+
+    print("samples_ddim", samples.shape)
+    x_samples = model.decode_first_stage(samples)
+    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
+    images = []
+    for x_sample in x_samples:
+        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+        images.append(Image.fromarray(x_sample.astype(np.uint8))) # .save(image_path)
+    return images
 
 
 
@@ -354,11 +335,10 @@ class WidgetDict2(OrderedDict):
 def get_default_options():
     options = WidgetDict2()
     options['outdir'] ="./outputs"
+    options['precision'] = "autocast"
     options['sampler'] = "euler"
-    options['skip_save'] = False
     options['ddim_steps'] = 50
     options['plms'] = True
-    options['laion400m'] = False
     options['ddim_eta'] = 0.0
     options['n_iter'] = 1
     options['C'] = 4
@@ -368,7 +348,6 @@ def get_default_options():
     options['from_file'] = None
     options['config'] = "configs/stable-diffusion/v1-inference.yaml"
     options['ckpt'] ="/stable-diffusion-checkpoints/v1-5-pruned-emaonly.ckpt"
-    options['precision'] = "full"  # or "full" "autocast"
     options['use_init'] = True
     # Extra option for the notebook
     options['display_inline'] = False
@@ -376,14 +355,5 @@ def get_default_options():
     return options
 
 
-def load_img(path, shape):
-    if path.startswith('http://') or path.startswith('https://'):
-        image = Image.open(requests.get(path, stream=True).raw).convert('RGB')
-    else:
-        image = Image.open(path).convert('RGB')
-
-    image = image.resize(shape, resample=Image.LANCZOS)
-    image = np.array(image).astype(np.float32) / 255.0
-    image = image[None].transpose(0, 3, 1, 2)
-    image = torch.from_numpy(image)
-    return 2.*image - 1.
+# bs 8: 77.5s
+# bs 1: 160s
