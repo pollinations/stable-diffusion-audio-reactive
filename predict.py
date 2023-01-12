@@ -11,6 +11,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
 from glob import glob
+from time import time
 
 import librosa
 import numpy as np
@@ -32,6 +33,7 @@ from torch import autocast
 #from tqdm.auto import tqdm, trange  # NOTE: updated for notebook
 from tqdm import tqdm, trange  # NOTE: updated for notebook
 
+count_image_save = 0
 
 class Predictor(BasePredictor):
 
@@ -86,9 +88,16 @@ class Predictor(BasePredictor):
         height: int = Input(
             default=512,
             description="Height of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
+        ),
+        batch_size: int = Input(
+            default=4,
+            description="Batch size. Higher values will result in quicker generation but may cause memory problems depending on the resolution.",
         )
     ) -> Path:
+        global count_image_save
+        count_image_save = 0
 
+        start_time = time()
         init_image = None
         init_image_strength = 0.7
 
@@ -132,12 +141,13 @@ class Predictor(BasePredictor):
         audio_length = len(options["audio_intensities"])
         num_prompts = len(options['prompts'])
 
-        num_frames_per_prompt = audio_length // (num_prompts-1)
+        num_frames_per_prompt = audio_length // max((1,(num_prompts-1)))
         
         print("num frames per prompt", num_frames_per_prompt)
         options['num_interpolation_steps'] = num_frames_per_prompt
 
-        run_inference(options, self.model, self.model_wrap, self.device)
+        with torch.autocast("cuda"):
+            run_inference(options, self.model, self.model_wrap, self.device, batch_size)
 
         #if num_frames_per_prompt == 1:
         #    return Path(options['output_path'])     
@@ -148,11 +158,15 @@ class Predictor(BasePredictor):
         
         
 
+        end_time = time()
 
         audio_options = ""
         if audio_file is not None:
             audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
-        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
+        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} -r {frame_rate} /tmp/z_interpollation.mp4')
+        
+        os.system(f"ls -l {options['outdir']}/")
+        print("total time", end_time - start_time)
         return Path("/tmp/z_interpollation.mp4")
 
 
@@ -168,7 +182,8 @@ def load_model(opt,device):
     config = OmegaConf.load(f"{opt.config}")
     model = load_model_from_config(config, f"{opt.ckpt}")
 
-    model = model.to(device)
+    model = model.half().to(device)
+    # model = model.to(device)
     
     return model
 
@@ -198,52 +213,10 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
 
     return v2
 
-def diffuse(count_start, start_code, c, batch_size, opt, model, model_wrap, outpath, device):
-    #print("diffusing with batch size", batch_size)
-    uc = None
-    if opt.scale != 1.0:
-        uc = model.get_learned_conditioning(batch_size * [""])
-
-    t_enc = 0
-    if opt.init_image is not None:
-        t_enc = round(opt.steps * (1.0 - opt.init_image_strength))
-    print("using init image", opt.init_image, "for", t_enc, "steps")
-    #if args.sampler in ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral"]:
-    samples = sampler_fn(
-        c=c,
-        uc=uc,
-        args=opt,
-        model_wrap=model_wrap,
-        init_latent=start_code,
-        t_enc=t_enc,
-        device=device,
-        # cb=callback
-        )
-    # samples, _ = sampler.sample(S=opt.ddim_steps,
-    #                                 conditioning=c,
-    #                                 batch_size=batch_size,
-    #                                 shape=shape,
-    #                                 verbose=False,
-    #                                 unconditional_guidance_scale=opt.scale,
-    #                                 unconditional_conditioning=uc,
-    #                                 eta=opt.ddim_eta,
-    #                                 x_T=start_code)   
-    print("samples_ddim", samples.shape)
-    x_samples = model.decode_first_stage(samples)
-    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
-    if not opt.skip_save:
-        count = count_start
-        for x_sample in x_samples:
-            x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-            image_path = os.path.join(outpath, f"{count:05}.png")
-            prompt_path = os.path.join(outpath, f"{count:05}.txt")
-            Image.fromarray(x_sample.astype(np.uint8)).save(image_path)
-            count += 1
-    
 
 
 
-def run_inference(opt, model, model_wrap, device):
+def run_inference(opt, model, model_wrap, device, accumulate_batch_size=4):
     """Seperates the loading of the model from the inference
     
     Additionally, slightly modified to display generated images inline
@@ -277,11 +250,9 @@ def run_inference(opt, model, model_wrap, device):
 
     datas = [[batch_size * c] for c in cs] 
 
-    run_count = len(os.listdir(outpath)) + 1
-
     os.makedirs(outpath, exist_ok=True)
     
-    base_count = len(os.listdir(outpath))
+    base_count = 0
     
     start_code_a = None
     start_code_b = None
@@ -333,15 +304,97 @@ def run_inference(opt, model, model_wrap, device):
                 
                         start_code = slerp(float(noise_t), start_code_a, start_code_b) #slerp(audio_intensity, start_code_a, start_code_b)
                         for c in data:
-                            diffuse(base_count, start_code, c, batch_size, opt, model, model_wrap, outpath, device)
+                            diffuse(accumulate_batch_size, start_code, c, opt, model, model_wrap, outpath, device)
                             base_count += 1
+            # make sure to diffuse last incomplete batch
+            diffuse_remaining_batch(opt, model, model_wrap, outpath, device)
 
 
 
-                toc = time.time()
 
     print(f"Your samples have been saved to: \n{outpath} \n"
           f" \nEnjoy.")
+
+
+
+
+accumulated_start_code = None
+accumulated_c = None
+
+def diffuse(accumulate_batch, start_code, c, opt, model, model_wrap, outpath, device):
+    global accumulated_start_code, accumulated_c
+
+    if accumulated_start_code is None:
+        accumulated_start_code = start_code
+        accumulated_c = c
+    else:
+        # acccumulate along axis 0
+        accumulated_start_code = torch.cat((accumulated_start_code, start_code), axis=0)
+        accumulated_c = torch.cat((accumulated_c, c), axis=0)
+    
+    if len(accumulated_start_code) < accumulate_batch:
+        return
+    
+    diffuse_batch(accumulated_start_code, accumulated_c, len(accumulated_start_code), opt, model, model_wrap, outpath, device)
+
+    accumulated_start_code = None
+    accumulated_c = None
+
+def diffuse_remaining_batch(opt, model, model_wrap, outpath, device):
+    global accumulated_start_code, accumulated_c
+
+    if accumulated_start_code is None:
+        return
+    
+    diffuse_batch(accumulated_start_code, accumulated_c, len(accumulated_start_code), opt, model, model_wrap, outpath, device)
+
+    accumulated_start_code = None
+    accumulated_c = None
+
+def diffuse_batch(start_code, c, batch_size, opt, model, model_wrap, outpath, device):
+    global count_image_save
+    print("diffusing with batch size", batch_size, "start code shape", start_code.shape, "c shape", c.shape)
+    uc = None
+    if opt.scale != 1.0:
+        uc = model.get_learned_conditioning(batch_size * [""])
+
+    t_enc = 0
+    if opt.init_image is not None:
+        t_enc = round(opt.steps * (1.0 - opt.init_image_strength))
+    print("using init image", opt.init_image, "for", t_enc, "steps")
+    #if args.sampler in ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral"]:
+
+
+    samples = sampler_fn(
+        c=c,
+        uc=uc,
+        args=opt,
+        model_wrap=model_wrap,
+        init_latent=start_code,
+        t_enc=t_enc,
+        device=device,
+        # cb=callback
+        )
+    # samples, _ = sampler.sample(S=opt.ddim_steps,
+    #                                 conditioning=c,
+    #                                 batch_size=batch_size,
+    #                                 shape=shape,
+    #                                 verbose=False,
+    #                                 unconditional_guidance_scale=opt.scale,
+    #                                 unconditional_conditioning=uc,
+    #                                 eta=opt.ddim_eta,
+    #                                 x_T=start_code)   
+    print("samples_ddim", samples.shape)
+    x_samples = model.decode_first_stage(samples)
+    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
+    if not opt.skip_save:
+        for x_sample in x_samples:
+            x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+            image_path = os.path.join(outpath, f"{count_image_save:05}.png")
+            prompt_path = os.path.join(outpath, f"{count_image_save:05}.txt")
+            Image.fromarray(x_sample.astype(np.uint8)).save(image_path)
+            print("saved", image_path)
+            count_image_save += 1
 
 
 
@@ -354,7 +407,7 @@ class WidgetDict2(OrderedDict):
 def get_default_options():
     options = WidgetDict2()
     options['outdir'] ="./outputs"
-    options['sampler'] = "euler"
+    options['sampler'] = "euler_ancestral"
     options['skip_save'] = False
     options['ddim_steps'] = 50
     options['plms'] = True
@@ -386,4 +439,10 @@ def load_img(path, shape):
     image = np.array(image).astype(np.float32) / 255.0
     image = image[None].transpose(0, 3, 1, 2)
     image = torch.from_numpy(image)
-    return 2.*image - 1.
+    return 2. * image - 1.
+
+
+# batch size 1: 98.12
+# batch size 4: 26.34
+# batch size 1: 580.77
+# batch size 4: 511.64
