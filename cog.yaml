@@ -58,6 +58,8 @@ build:
     # xformers
     - pip install ninja
     - pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+    - pip install triton==2.0.0.dev20221120
+    - pip install pyre-extensions==0.0.23
 
 # predict.py defines how predictions are run on your model
 predict: "predict.py:Predictor"

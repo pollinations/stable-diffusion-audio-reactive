@@ -89,7 +89,7 @@ class Predictor(BasePredictor):
             description="Height of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
         ),
         batch_size: int = Input(
-            default=4,
+            default=24,
             description="Number of images to generate at once. Higher batch sizes will generate images faster but will use more GPU memory i.e. not work depending on resolution.",
         )
     ) -> Path:
