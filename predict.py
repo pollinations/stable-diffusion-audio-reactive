@@ -34,6 +34,18 @@ from torch import autocast
 from tqdm import tqdm, trange  # NOTE: updated for notebook
 
 
+
+def get_amplitude_envelope(signal, hop_length):
+    """Calculate the amplitude envelope of a signal with a given frame size nad hop length."""
+    amplitude_envelope = []
+    
+    # calculate amplitude envelope for each frame
+    for i in range(0, len(signal), hop_length): 
+        amplitude_envelope_current_frame = max(np.abs(signal[i:i+hop_length]) )
+        amplitude_envelope.append(amplitude_envelope_current_frame)
+    
+    return np.array(amplitude_envelope)  
+
 class Predictor(BasePredictor):
 
 
@@ -76,6 +88,15 @@ class Predictor(BasePredictor):
             default=0.7,
             description="Audio smoothing factor.",
         ),
+        audio_noise_scale: float = Input(
+            default=0.15,
+            description="Larger values mean audio will lead to bigger changes in the image.",
+        ),
+        audio_loudness_type: str = Input(
+            default="rms",
+            description="Type of loudness to use for audio. Options are 'rms' or 'peak'.",
+            choices=["rms", "peak"],
+        ),
         frame_rate: int = Input(
             default=10,
             description="Frames per second for the generated video.",
@@ -115,6 +136,7 @@ class Predictor(BasePredictor):
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
         print("translated prompts", options['prompts'])
         options['n_samples'] = batch_size
+        options['audio_noise_scale'] = audio_noise_scale
         
         options['scale'] = prompt_scale
         options['seed'] = random_seed
@@ -130,10 +152,19 @@ class Predictor(BasePredictor):
         # calculate hop length based on frame rate
         hop_length = int(22050 / frame_rate)
         print("hop length", hop_length, "audio length", len(y), "audio sr", sr)
-        # get rms
-        rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
-        # normalize
-        options["audio_intensities"] = rms[0] / rms[0].max()
+        
+        if audio_loudness_type == "peak":
+            # get amplitude envelope
+            amplitude_envelope = get_amplitude_envelope(y, hop_length)
+            # normalize
+            options["audio_intensities"] = amplitude_envelope / amplitude_envelope.max()
+        else:
+            # get rms
+            rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)
+            # get amplitude envelope
+
+            # normalize
+            options["audio_intensities"] = rms[0] / rms[0].max()
 
         print("length of audio intensities", len(options["audio_intensities"]))
         audio_length = len(options["audio_intensities"])
@@ -260,7 +291,7 @@ def run_inference(opt, model, model_wrap, device):
     smoothed_intensity = 0      
     for audio_intensity in opt.audio_intensities:
         smoothed_intensity =  (smoothed_intensity * (opt.audio_smoothing)) + (audio_intensity * (1-opt.audio_smoothing))
-        noise_t = smoothed_intensity * 0.15
+        noise_t = smoothed_intensity * opt.audio_noise_scale
         start_code = slerp(float(noise_t), start_code_a, start_code_b)
         start_codes.append(start_code)
 
@@ -305,17 +336,19 @@ def diffuse(start_code, c, batch_size, opt, model, model_wrap,  device):
     uc = None
     if opt.scale != 1.0:
         uc = model.get_learned_conditioning(batch_size * [""])
-    
-    samples = sampler_fn(
-        c=c,
-        uc=uc,
-        args=opt,
-        model_wrap=model_wrap,
-        init_latent=start_code,
-        device=device,
-        # cb=callback
-        )
-
+    try:
+        samples = sampler_fn(
+            c=c,
+            uc=uc,
+            args=opt,
+            model_wrap=model_wrap,
+            init_latent=start_code,
+            device=device,
+            # cb=callback
+            )
+    except:
+        print("diffuse failed. returning empty list.")
+        return []
     print("samples_ddim", samples.shape)
     x_samples = model.decode_first_stage(samples)
     x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
