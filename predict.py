@@ -66,9 +66,13 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompts: str = Input(
-            default="""A lively and whimsical apothecary where chrome robots shop grows from the stalk of a giant mushroom, cgsociety, siggraph, oleg oprisco, conrad roset, anka zhuravleva, gediminas pranckevicius
-        A lively and whimsical dark apothecary shop, cinematic framing, rain lit, chrome robots on single wheels shop, the shop grows from the stalk of a giant mushroom, cgsociety, siggraph, dystopian scifi, concept art, set design, oleg oprisco, conrad roset, anka zhuravleva, gediminas pranckevicius, cornell, kawasaki
-        Surreal gouache painting, by yoshitaka amano, by ruan jia, by conrad roset, by kilian eng, by good smile company, detailed anime 3 d render of floating molecules and a robot artist holding an icosahedron with stars, clouds, and rainbows in the background, cgsociety, artstation, modular patterned mechanical costume and headpiece, retrowave atmosphere"""        ),
+            default="""A lively and whimsical apothecary where chrome robots shop grows from the stalk of a giant mushroom"
+        A lively and whimsical dark apothecary shop, cinematic framing, rain lit, chrome robots on single wheels shop, the shop grows from the stalk of a giant mushroom
+        Surreal gouache painting, by yoshitaka amano, by ruan jia, by conrad roset, by kilian eng, by good smile company, detailed anime 3 d render of floating molecules and a robot artist holding an icosahedron with stars, clouds, and rainbows in the background"""        ),
+        style_suffix: str = Input(
+            default="retrofuturism. artwork by roger dean, by dean ellis",
+            description="Style suffix to add to the prompt. This can be used to add the same style to each prompt.",
+        ),
         audio_file: Path = Input(
             default=None, 
             description="input audio file"),
@@ -93,7 +97,7 @@ class Predictor(BasePredictor):
             description="Larger values mean audio will lead to bigger changes in the image.",
         ),
         audio_loudness_type: str = Input(
-            default="rms",
+            default="peak",
             description="Type of loudness to use for audio. Options are 'rms' or 'peak'.",
             choices=["rms", "peak"],
         ),
@@ -129,10 +133,13 @@ class Predictor(BasePredictor):
         
 
 
-        # num_frames_per_prompt = abs(min(num_frames_per_prompt, 15))
+        # num_frames_per_prompt = abs(min(num_frames_per_  prompt, 15))
         
+        # add style suffix to each prompt
+        prompts = [prompt + "." + style_suffix for prompt in prompts.split("\n")]
+
         options = self.options
-        options['prompts'] = prompts.split("\n")
+        options['prompts'] = prompts
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
         print("translated prompts", options['prompts'])
         options['n_samples'] = batch_size
