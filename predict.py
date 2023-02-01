@@ -32,7 +32,7 @@ from scripts.txt2img import chunk, load_model_from_config
 from torch import autocast
 #from tqdm.auto import tqdm, trange  # NOTE: updated for notebook
 from tqdm import tqdm, trange  # NOTE: updated for notebook
-
+from typing import Iterator
 
 
 def get_amplitude_envelope(signal, hop_length):
@@ -121,7 +121,7 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
             default=True,
             description="Whether to interpolate between frames using FFMPEG or not.",
         )
-    ) -> Path:
+    ) -> Iterator[Path]:
 
         start_time = time()
 
@@ -135,8 +135,6 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
             init_image = str(init_image)
             print("using init image", init_image)
         
-
-
         # num_frames_per_prompt = abs(min(num_frames_per_  prompt, 15))
         
         # add style suffix to each prompt
@@ -188,7 +186,10 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
 
         precision_scope = autocast if options.precision=="autocast" else nullcontext
         with precision_scope("cuda"):
-            run_inference(options, self.model, self.model_wrap, self.device)
+            for image_path in run_inference(options, self.model, self.model_wrap, self.device):
+                yield Path(image_path)
+
+
 
         #if num_frames_per_prompt == 1:
         #    return Path(options['output_path'])     
@@ -197,21 +198,27 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
 
         # calculate the frame rate of the video so that the length is always 8 seconds
         
-        
+        os.system("nvidia-smi")
 
         end_time = time()
         audio_options = ""
         if audio_file is not None:
             audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
         
-        frame_interpolation_flag = ""
-        if frame_interpolation:
-            frame_interpolation_flag =  '-filter:v "minterpolate=\'fps=50\'"'
-        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} ${frame_interpolation_flag} /tmp/z_interpollation.mp4')
-    
-        os.system("nvidia-smi")
+
         print("total time", end_time - start_time)
-        return Path("/tmp/z_interpollation.mp4")
+        
+        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png  {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
+
+
+        if frame_interpolation:
+            # convert previously generated video to 54 fps
+            os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=40\'" {encoding_options} /tmp/z_interpollation_40fps.mp4')
+            yield Path("/tmp/z_interpollation_40fps.mp4")
+
+        # print(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} ${frame_interpolation_flag} {encoding_options} /tmp/z_interpollation.mp4')
+
+        yield Path("/tmp/z_interpollation.mp4")
 
 
 def load_model(opt,device):
@@ -285,7 +292,9 @@ def run_inference(opt, model, model_wrap, device):
         prompts = prompts + [prompts[-1]]
 
     print("embedding prompts")
-    datas =[model.get_learned_conditioning(prompt) for prompt in prompts]
+    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    with precision_scope("cuda"):
+        datas =[model.get_learned_conditioning(prompt) for prompt in prompts]
 
     print("prompt 0 shape", datas[0].shape)
 
@@ -320,22 +329,24 @@ def run_inference(opt, model, model_wrap, device):
     print("interp prompts 0 shape", interpolated_prompts[0].shape, "start_codes 0 shape", start_codes[0].shape)
 
 
-    precision_scope = autocast if opt.precision=="autocast" else nullcontext
-
     with torch.no_grad():
-        with precision_scope("cuda"):
-            with model.ema_scope():
-                # chunk interpolated_prompts into batches
-                for i in range(0, len(interpolated_prompts), batch_size):
-                    data_batch = torch.cat(interpolated_prompts[i:i+batch_size])
-                    start_code_batch = torch.cat(start_codes[i:i+batch_size])
+        with model.ema_scope():
+            # chunk interpolated_prompts into batches
+            for i in range(0, len(interpolated_prompts), batch_size):
+                data_batch = torch.cat(interpolated_prompts[i:i+batch_size])
+                start_code_batch = torch.cat(start_codes[i:i+batch_size])
 
-                    print("data_batch",data_batch.shape, "start_code_batch",start_code_batch.shape)
-                    images = diffuse(start_code_batch, data_batch, len(data_batch), opt, model, model_wrap, device)
-                    for i2, image in enumerate(images):
-                        image_path = os.path.join(outpath, f"{i+i2:05}.png")
-                        image.save(image_path)
-                        print(f"Saved {image_path}")
+                print("data_batch",data_batch.shape, "start_code_batch",start_code_batch.shape)
+                images = diffuse(start_code_batch, data_batch, len(data_batch), opt, model, model_wrap, device)
+                
+
+                for i2, image in enumerate(images):
+                    image_path = os.path.join(outpath, f"{i+i2:05}.png")
+                    image.save(image_path)
+                    print(f"Saved {image_path}")
+
+                    if i2 == len(images)-1:
+                        yield image_path
 
 
 
@@ -347,31 +358,33 @@ def run_inference(opt, model, model_wrap, device):
 
 
 def diffuse(start_code, c, batch_size, opt, model, model_wrap,  device):
-    #print("diffusing with batch size", batch_size)
-    uc = None
-    if opt.scale != 1.0:
-        uc = model.get_learned_conditioning(batch_size * [""])
-    try:
-        samples = sampler_fn(
-            c=c,
-            uc=uc,
-            args=opt,
-            model_wrap=model_wrap,
-            init_latent=start_code,
-            device=device,
-            # cb=callback
-            )
-    except:
-        print("diffuse failed. returning empty list.")
-        return []
-    print("samples_ddim", samples.shape)
-    x_samples = model.decode_first_stage(samples)
-    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
-    images = []
-    for x_sample in x_samples:
-        x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-        images.append(Image.fromarray(x_sample.astype(np.uint8))) # .save(image_path)
-    return images
+    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    with precision_scope("cuda"):
+        #print("diffusing with batch size", batch_size)
+        uc = None
+        if opt.scale != 1.0:
+            uc = model.get_learned_conditioning(batch_size * [""])
+        try:
+            samples = sampler_fn(
+                c=c,
+                uc=uc,
+                args=opt,
+                model_wrap=model_wrap,
+                init_latent=start_code,
+                device=device,
+                # cb=callback
+                )
+        except:
+            print("diffuse failed. returning empty list.")
+            return []
+        print("samples_ddim", samples.shape)
+        x_samples = model.decode_first_stage(samples)
+        x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
+        images = []
+        for x_sample in x_samples:
+            x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+            images.append(Image.fromarray(x_sample.astype(np.uint8))) # .save(image_path)
+        return images
 
 
 
