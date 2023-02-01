@@ -66,11 +66,11 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompts: str = Input(
-            default="""A lively and whimsical apothecary where chrome robots shop grows from the stalk of a giant mushroom"
-        A lively and whimsical dark apothecary shop, cinematic framing, rain lit, chrome robots on single wheels shop, the shop grows from the stalk of a giant mushroom
-        Surreal gouache painting, by yoshitaka amano, by ruan jia, by conrad roset, by kilian eng, by good smile company, detailed anime 3 d render of floating molecules and a robot artist holding an icosahedron with stars, clouds, and rainbows in the background"""        ),
+            default="""A painting of a moth
+A painting of a killer dragonfly by paul klee, intricate detail
+Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         style_suffix: str = Input(
-            default="retrofuturism. artwork by roger dean, by dean ellis",
+            default="by paul klee, intricate details",
             description="Style suffix to add to the prompt. This can be used to add the same style to each prompt.",
         ),
         audio_file: Path = Input(
@@ -89,11 +89,11 @@ class Predictor(BasePredictor):
             description="Number of diffusion steps. Higher steps could produce better results but will take longer to generate. Maximum 30 (using K-Euler-Diffusion).",
         ),
         audio_smoothing: float = Input(
-            default=0.7,
+            default=0.8,
             description="Audio smoothing factor.",
         ),
         audio_noise_scale: float = Input(
-            default=0.15,
+            default=0.3,
             description="Larger values mean audio will lead to bigger changes in the image.",
         ),
         audio_loudness_type: str = Input(
@@ -116,6 +116,10 @@ class Predictor(BasePredictor):
         batch_size: int = Input(
             default=24,
             description="Number of images to generate at once. Higher batch sizes will generate images faster but will use more GPU memory i.e. not work depending on resolution.",
+        ),
+        frame_interpolation: bool = Input(
+            default=True,
+            description="Whether to interpolate between frames using FFMPEG or not.",
         )
     ) -> Path:
 
@@ -199,7 +203,11 @@ class Predictor(BasePredictor):
         audio_options = ""
         if audio_file is not None:
             audio_options = f"-i {audio_file} -map 0:v -map 1:a -shortest"
-        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
+        
+        frame_interpolation_flag = ""
+        if frame_interpolation:
+            frame_interpolation_flag =  '-filter:v "minterpolate=\'fps=50\'"'
+        os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} {encoding_options} ${frame_interpolation_flag} /tmp/z_interpollation.mp4')
     
         os.system("nvidia-smi")
         print("total time", end_time - start_time)
