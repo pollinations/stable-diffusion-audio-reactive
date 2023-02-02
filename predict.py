@@ -7,6 +7,7 @@ sys.path.append("/k-diffusion")
 import os
 import sys
 import time
+import math
 # Code to turn kwargs into Jupyter widgets
 from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
@@ -101,8 +102,8 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
             description="Type of loudness to use for audio. Options are 'rms' or 'peak'.",
             choices=["rms", "peak"],
         ),
-        frame_rate: int = Input(
-            default=10,
+        frame_rate: float = Input(
+            default=16,
             description="Frames per second for the generated video.",
         ),
         width: int = Input(
@@ -215,6 +216,7 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
             # convert previously generated video to 54 fps
             os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=40\'" {encoding_options} /tmp/z_interpollation_40fps.mp4')
             yield Path("/tmp/z_interpollation_40fps.mp4")
+            return
 
         # print(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} ${frame_interpolation_flag} {encoding_options} /tmp/z_interpollation.mp4')
 
@@ -234,9 +236,14 @@ def load_model(opt,device):
     
     return model
 
-def slerp(t, v0, v1, DOT_THRESHOLD=0.9995):
+def slerp(t, v0, v1, DOT_THRESHOLD=0.9995, nonlinear=False):
     """ helper function to spherically interpolate two arrays v1 v2 """
 
+
+    if nonlinear:
+        # a smooth function that goes from 0 to 1 but grows quickly and then slows down
+        t = 1 - math.exp(-t * 3)
+    
     if not isinstance(v0, np.ndarray):
         inputs_are_torch = True
         input_device = v0.device
@@ -322,7 +329,7 @@ def run_inference(opt, model, model_wrap, device):
 
     interpolated_prompts = []
     for data_a,data_b in zip(datas,datas[1:]):         
-        interpolated_prompts = interpolated_prompts + [slerp(float(t), data_a, data_b) for t in np.linspace(0, 1, opt.num_interpolation_steps)]
+        interpolated_prompts = interpolated_prompts + [slerp(float(t), data_a, data_b, nonlinear=True) for t in np.linspace(0, 1, opt.num_interpolation_steps)]
 
     print("len smoothed_audio_intensities",len(start_codes), "len interpolated_prompts",len(interpolated_prompts))
 
