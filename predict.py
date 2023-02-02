@@ -216,15 +216,17 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         os.system(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png  {audio_options} {encoding_options} /tmp/z_interpollation.mp4')
 
 
-        if frame_interpolation:
-            # convert previously generated video to 54 fps
-            os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=40\'" {encoding_options} /tmp/z_interpollation_40fps.mp4')
-            yield Path("/tmp/z_interpollation_40fps.mp4")
-            return
+
 
         # print(f'ffmpeg -y -r {frame_rate} -i {options["outdir"]}/%*.png {audio_options} ${frame_interpolation_flag} {encoding_options} /tmp/z_interpollation.mp4')
 
         yield Path("/tmp/z_interpollation.mp4")
+
+        if frame_interpolation:
+            # convert previously generated video to 54 fps
+            os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=40\'" {encoding_options} /tmp/z_interpollation_40fps.mp4')
+            yield Path("/tmp/z_interpollation_40fps.mp4")
+
 
 
 def load_model(opt,device):
@@ -246,7 +248,7 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995, nonlinear=False):
 
     if nonlinear:
         # a smooth function that goes from 0 to 1 but grows quickly and then slows down
-        t = 1 - math.exp(-t * 3)
+        t = 1 - math.exp(-t * 4)
     
     if not isinstance(v0, np.ndarray):
         inputs_are_torch = True
