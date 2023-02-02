@@ -142,8 +142,8 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         prompts = [prompt + "." + style_suffix for prompt in prompts.split("\n")]
 
 
-        # start with only style prompt
-        prompts = [style_suffix] + prompts
+        # append first prompt to the start
+        prompts = [prompts[0]] + prompts
 
         options = self.options
         options['prompts'] = prompts
@@ -225,7 +225,7 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         if frame_interpolation:
             # convert previously generated video to 54 fps
             os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=60\'" {encoding_options} /tmp/z_interpollation_60fps.mp4')
-            yield Path("/tmp/z_interpollation_40fps.mp4")
+            yield Path("/tmp/z_interpollation_60fps.mp4")
 
 
 
@@ -248,7 +248,7 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995, nonlinear=False):
 
     if nonlinear:
         # a smooth function that goes from 0 to 1 but grows quickly and then slows down
-        t = 1 - math.exp(-(t+0.025) * 15)
+        t = 1 - math.exp(-t * 15)
     
     if not isinstance(v0, np.ndarray):
         inputs_are_torch = True
@@ -299,10 +299,6 @@ def run_inference(opt, model, model_wrap, device):
     if len(prompts) == 1:
         single_prompt = True
         prompts = prompts + [prompts[0]]
-
-
-    if (not single_prompt) and (opt.num_interpolation_steps == 1):
-        prompts = prompts + [prompts[-1]]
 
     print("embedding prompts")
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
