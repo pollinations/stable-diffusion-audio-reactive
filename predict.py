@@ -248,7 +248,7 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995, nonlinear=False):
 
     if nonlinear:
         # a smooth function that goes from 0 to 1 but grows quickly and then slows down
-        t = 1 - math.exp(-t * 15)
+        t = 1 - math.exp(-t * 8)
     
     if not isinstance(v0, np.ndarray):
         inputs_are_torch = True
