@@ -141,6 +141,10 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         # add style suffix to each prompt
         prompts = [prompt + "." + style_suffix for prompt in prompts.split("\n")]
 
+
+        # start with only style prompt
+        prompts = [style_suffix] + prompts
+
         options = self.options
         options['prompts'] = prompts
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
