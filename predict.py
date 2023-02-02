@@ -224,7 +224,7 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
 
         if frame_interpolation:
             # convert previously generated video to 54 fps
-            os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=40\'" {encoding_options} /tmp/z_interpollation_40fps.mp4')
+            os.system(f'ffmpeg -y -i /tmp/z_interpollation.mp4 -filter:v "minterpolate=\'fps=60\'" {encoding_options} /tmp/z_interpollation_60fps.mp4')
             yield Path("/tmp/z_interpollation_40fps.mp4")
 
 
@@ -248,7 +248,7 @@ def slerp(t, v0, v1, DOT_THRESHOLD=0.9995, nonlinear=False):
 
     if nonlinear:
         # a smooth function that goes from 0 to 1 but grows quickly and then slows down
-        t = 1 - math.exp(-t * 4)
+        t = 1 - math.exp(-(t+0.025) * 15)
     
     if not isinstance(v0, np.ndarray):
         inputs_are_torch = True
