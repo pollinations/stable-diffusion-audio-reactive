@@ -17,9 +17,7 @@ build:
   # a list of packages in the format <package-name>==<version>
   python_packages:
     - "numpy==1.21.6"
-    - "torch==1.13.0"
-    - "torchvision==0.14.0"
-    - "transformers==4.19.2"
+ 
     - "open_clip_torch==1.2.1"
     - "autokeras==1.0.19"
     - "torchmetrics==0.6.0"
@@ -60,7 +58,8 @@ build:
     - pip install ninja
     - git clone https://github.com/facebookresearch/xformers.git
     - export FORCE_CUDA="1" && export CUDA_VISIBLE_DEVICES=0 && export TORCH_CUDA_ARCH_LIST=8.0 && export CUDA_HOME=/usr/local/cuda-11.7 && cd xformers && git submodule update --init --recursive && pip install -r requirements.txt && pip install -e .
-
+    - apt update && apt install -y libsm6 libxext6 && apt-get install -y libxrender-dev
+    - pip install invisible-watermark
 
 
 # predict.py defines how predictions are run on your model

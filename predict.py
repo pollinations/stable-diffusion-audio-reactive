@@ -35,6 +35,8 @@ from torch import autocast
 from tqdm import tqdm, trange  # NOTE: updated for notebook
 from typing import Iterator
 
+from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.uni_pc import UniPCSampler
 
 def get_amplitude_envelope(signal, hop_length):
     """Calculate the amplitude envelope of a signal with a given frame size nad hop length."""
@@ -59,7 +61,9 @@ class Predictor(BasePredictor):
         self.options = options
 
         self.model = load_model(self.options, self.device)
-        self.model_wrap = CompVisDenoiser(self.model)
+        self.model_wrap = None
+        if options.sampler != "unipc":
+            self.model_wrap = CompVisDenoiser(self.model)
 
         self.translator= Translator()
 
@@ -107,7 +111,7 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
             description="Frames per second for the generated video.",
         ),
         width: int = Input(
-            default=384,
+            default=512,
             description="Width of the generated image. The model was really only trained on 512x512 images. Other sizes tend to create less coherent images.",
         ),
         height: int = Input(
@@ -121,7 +125,15 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         frame_interpolation: bool = Input(
             default=True,
             description="Whether to interpolate between frames using FFMPEG or not.",
-        )
+        ),
+        custom_model_ckpt_url: str = Input(
+            default=None,
+            description="URL to a custom model checkpoint. If this is set, the model will be loaded from this URL instead of the default model.",
+        ),
+        custom_model_config_url: str = Input(
+            default=None,
+            description="URL to a custom model config. If this is set, the model config will be loaded from this URL instead of the default model config.",
+        ),
     ) -> Iterator[Path]:
 
         start_time = time()
@@ -146,6 +158,15 @@ Two fishes talking to eachother in deep sea, art by hieronymus bosch"""),
         prompts = [prompts[0]] + prompts
 
         options = self.options
+
+        if custom_model_ckpt_url is not None:
+            options["config"] = custom_model_ckpt_url
+            options["ckpt"] = custom_model_config_url
+            self.model = load_model(options, self.device)
+            self.model_wrap = None
+            if options.sampler != "unipc":
+                self.model_wrap = CompVisDenoiser(self.model)      
+
         options['prompts'] = prompts
         options['prompts'] = [self.translator.translate(prompt.strip()).text for prompt in options['prompts'] if prompt.strip()]
         print("translated prompts", options['prompts'])
@@ -287,6 +308,9 @@ def run_inference(opt, model, model_wrap, device):
     # else:
     #     sampler = DDIMSampler(model)
 
+    sample_fn = None
+    if opt.sampler == "unipc":
+        sample_fn = UniPCSampler(model)
     outpath = opt.outdir
     os.makedirs(outpath, exist_ok=True)
 
@@ -346,7 +370,7 @@ def run_inference(opt, model, model_wrap, device):
                 start_code_batch = torch.cat(start_codes[i:i+batch_size])
 
                 print("data_batch",data_batch.shape, "start_code_batch",start_code_batch.shape)
-                images = diffuse(start_code_batch, data_batch, len(data_batch), opt, model, model_wrap, device)
+                images = diffuse(start_code_batch, data_batch, len(data_batch), opt, model, model_wrap, device, sample_fn)
                 
 
                 for i2, image in enumerate(images):
@@ -366,26 +390,43 @@ def run_inference(opt, model, model_wrap, device):
 
 
 
-def diffuse(start_code, c, batch_size, opt, model, model_wrap,  device):
+def diffuse(start_code, c, batch_size, opt, model, model_wrap,  device, sample_fn=None):
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
     with precision_scope("cuda"):
         #print("diffusing with batch size", batch_size)
         uc = None
         if opt.scale != 1.0:
             uc = model.get_learned_conditioning(batch_size * [""])
-        try:
-            samples = sampler_fn(
-                c=c,
-                uc=uc,
-                args=opt,
-                model_wrap=model_wrap,
-                init_latent=start_code,
-                device=device,
-                # cb=callback
-                )
-        except:
-            print("diffuse failed. returning empty list.")
-            return []
+        
+        if sample_fn:
+            shape = [
+                    model.model.diffusion_model.in_channels,
+                    model.model.diffusion_model.image_size,
+                    model.model.diffusion_model.image_size]
+            print("calling sample_fn with", opt.steps, batch_size, shape, 1.0)
+            samples, _intermediate = sample_fn.sample(
+                opt.steps, 
+                batch_size=batch_size, 
+                shape=shape, 
+                verbose=True, 
+                conditioning=c, 
+                x_T=start_code,
+                unconditional_guidance_scale=opt.scale,
+                unconditional_conditioning=uc,)
+        else:
+            try:
+                samples = sampler_fn(
+                    c=c,
+                    uc=uc,
+                    args=opt,
+                    model_wrap=model_wrap,
+                    init_latent=start_code,
+                    device=device,
+                    # cb=callback
+                    )
+            except:
+                print("diffuse failed. returning empty list.")
+                return []
         print("samples_ddim", samples.shape)
         x_samples = model.decode_first_stage(samples)
         x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
